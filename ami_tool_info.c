@@ -1071,13 +1071,72 @@ static int32_t ami_tool_info_write_worker(void* context) {
         return 0;
     }
 
+    MfUltralightData* target = mf_ultralight_alloc();
+    if(!target) {
+        ami_tool_info_write_send_event(
+            app, AmiToolEventInfoWriteFailed, "Unable to allocate tag buffer.");
+        return 0;
+    }
+
+    while(true) {
+        if(app->write_cancel_requested) {
+            ami_tool_info_write_send_event(
+                app, AmiToolEventInfoWriteCancelled, "Write cancelled.");
+            goto cleanup;
+        }
+
+        MfUltralightError error = mf_ultralight_poller_sync_read_card(app->nfc, target, NULL);
+        if(error == MfUltralightErrorNone) {
+            break;
+        }
+        if((error == MfUltralightErrorNotPresent) || (error == MfUltralightErrorTimeout)) {
+            furi_delay_ms(100);
+            continue;
+        }
+
+        char message[96];
+        snprintf(
+            message,
+            sizeof(message),
+            "Unable to read tag: %s",
+            ami_tool_info_error_to_string(error));
+        ami_tool_info_write_send_event(app, AmiToolEventInfoWriteFailed, message);
+        goto cleanup;
+    }
+
+    if(target->type != MfUltralightTypeNTAG215) {
+        ami_tool_info_write_send_event(
+            app, AmiToolEventInfoWriteFailed, "Detected tag is not an NTAG215.");
+        goto cleanup;
+    }
+
+    size_t target_uid_len = 0;
+    const uint8_t* target_uid = mf_ultralight_get_uid(target, &target_uid_len);
+    if(!target_uid || target_uid_len < 7) {
+        ami_tool_info_write_send_event(
+            app, AmiToolEventInfoWriteFailed, "Unable to read tag UID.");
+        goto cleanup;
+    }
+
+    bool uid_matches = app->last_uid_valid && (app->last_uid_len >= 7) &&
+                       (memcmp(app->last_uid, target_uid, 7) == 0);
+    if(!uid_matches) {
+        if(!ami_tool_info_rebuild_dump_for_uid(app, target_uid, target_uid_len)) {
+            ami_tool_info_write_send_event(
+                app,
+                AmiToolEventInfoWriteFailed,
+                "Failed to prepare Amiibo data. Install key_retail.bin and try again.");
+            goto cleanup;
+        }
+    }
+
     MfUltralightError io_error = MfUltralightErrorNone;
     uint16_t failed_page = UINT16_MAX;
     AmiToolWriteStatus status = ami_tool_write_custom_sequence(app, &io_error, &failed_page);
 
     if(app->write_cancel_requested) {
         ami_tool_info_write_send_event(app, AmiToolEventInfoWriteCancelled, "Write cancelled.");
-        return 0;
+        goto cleanup;
     }
 
     if(status != AmiToolWriteStatusOk) {
@@ -1099,10 +1158,12 @@ static int32_t ami_tool_info_write_worker(void* context) {
             snprintf(message, sizeof(message), "%s", ami_tool_write_status_to_string(status));
         }
         ami_tool_info_write_send_event(app, AmiToolEventInfoWriteFailed, message);
-        return 0;
+        goto cleanup;
     }
 
     ami_tool_info_write_send_event(app, AmiToolEventInfoWriteSuccess, NULL);
+cleanup:
+    mf_ultralight_free(target);
     return 0;
 }
 
