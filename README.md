@@ -29,9 +29,17 @@ This app is not yet available in the official Flipper Zero app store. Instead, y
 - Copy the `ami_tool.fap` file to the NFC apps directory on your Flipper Zero's storage (usually located at `/apps/NFC/` in SD card).
 - Restart your Flipper Zero to load the new app.
 
+### Firmware compatibility
+
+External Flipper applications are compiled against a specific firmware API. If the Flipper displays an error such as `App: 87, FW: 88`, the FAP must be rebuilt with an SDK compatible with the installed firmware; copying the same FAP again cannot fix that error. The project CI validates every pull request, weekly, and on demand against the current release SDK. For custom firmware, build the FAP with the matching SDK before installing it.
+
+Some custom firmware forks also add fields to the NFC data structures shared with this app (for example, to support additional tag types); when that happens, a FAP built against a different SDK than the one actually running on the device can silently produce corrupted or empty NFC dumps instead of failing to launch. If your device shows correct data on-screen but saved or emulated Amiibo don't work, rebuilding with the SDK your specific firmware ships (rather than the generic official one) is worth trying before assuming a code bug.
+
 ## Usage
 
 To use the generation and UID randomisation features, you will need to have a `key_retail.bin` file available in the app data directory (`/apps_data/ami_tool`). This file contains the necessary cryptographic keys to encrypt/decrypt and sign character data. It is legally Nintendo's intellectual property, and cannot be distributed with this project. You will need to obtain it yourself, for example by dumping it from a console you own that supports such functionality, or by finding it from other sources. We will not provide instructions on how to obtain this file, as doing so may violate Nintendo's terms of service or local laws, but there are plenty of guides online.
+
+The app requires an exact 160-byte key file and performs a format check when it is loaded. The contents are never written to the log. A malformed file produces a specific error rather than being used to create invalid data.
 
 Following are some screenshots of the app in action, all the steps of usage are guided within the app itself.
 

@@ -7,6 +7,13 @@ dist/*
 .editorconfig
 .env
 .ufbt
+.ufbt-sdk/
+.venv-ufbt/
+__pycache__/
+.DS_Store
 
 # Experimental scripts and data
 /experiment/*
+
+# Local test dumps and key material, never commit these
+/temp-files/
