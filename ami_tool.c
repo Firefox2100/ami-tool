@@ -33,6 +33,7 @@ AmiToolApp* ami_tool_alloc(void) {
 
     /* GUI record and attach */
     app->gui = furi_record_open(RECORD_GUI);
+    app->notification = furi_record_open(RECORD_NOTIFICATION);
     view_dispatcher_attach_to_gui(
         app->view_dispatcher, app->gui, ViewDispatcherTypeFullscreen);
 
@@ -238,6 +239,10 @@ void ami_tool_free(AmiToolApp* app) {
     }
 
     /* GUI record */
+    if(app->notification) {
+        furi_record_close(RECORD_NOTIFICATION);
+        app->notification = NULL;
+    }
     furi_record_close(RECORD_GUI);
     app->gui = NULL;
 

@@ -110,12 +110,30 @@ static void ami_tool_scene_read_start_worker(AmiToolApp* app) {
     ami_tool_scene_read_reset_result(app);
     app->read_thread = furi_thread_alloc_ex(
         "AmiToolNfcRead", AMI_TOOL_READ_THREAD_STACK_SIZE, ami_tool_scene_read_worker, app);
+    if(!app->read_thread) {
+        FURI_LOG_E("AmiToolNfc", "Unable to allocate NFC read worker");
+        app->read_result = (AmiToolReadResult){
+            .type = AmiToolReadResultError,
+            .error = MfUltralightErrorProtocol,
+        };
+        view_dispatcher_send_custom_event(app->view_dispatcher, AmiToolEventReadError);
+        return;
+    }
     furi_thread_start(app->read_thread);
 }
 
 static int32_t ami_tool_scene_read_worker(void* context) {
     AmiToolApp* app = context;
     MfUltralightData* data = mf_ultralight_alloc();
+    if(!data) {
+        FURI_LOG_E("AmiToolNfc", "Unable to allocate NFC read buffer");
+        app->read_result = (AmiToolReadResult){
+            .type = AmiToolReadResultError,
+            .error = MfUltralightErrorProtocol,
+        };
+        view_dispatcher_send_custom_event(app->view_dispatcher, AmiToolEventReadError);
+        return 0;
+    }
     bool waiting_for_tag = true;
 
     while(app->read_scene_active) {
@@ -151,6 +169,7 @@ static int32_t ami_tool_scene_read_worker(void* context) {
             result.tag_type = data->type;
 
             if(data->type != MfUltralightTypeNTAG215) {
+                FURI_LOG_W("AmiToolNfc", "Rejected non-NTAG215 tag (type %d)", data->type);
                 result.type = AmiToolReadResultWrongType;
                 event = AmiToolEventReadWrongType;
             } else {
@@ -178,9 +197,11 @@ static int32_t ami_tool_scene_read_worker(void* context) {
 
                 result.type = AmiToolReadResultSuccess;
                 result.error = MfUltralightErrorNone;
+                FURI_LOG_I("AmiToolNfc", "Read NTAG215 tag with %u UID bytes", (unsigned)result.uid_len);
                 event = AmiToolEventReadSuccess;
             }
         } else {
+            FURI_LOG_W("AmiToolNfc", "NTAG215 read failed (%d)", error);
             result.type = AmiToolReadResultError;
             event = AmiToolEventReadError;
         }

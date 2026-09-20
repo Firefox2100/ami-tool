@@ -8,8 +8,15 @@
 #include <nfc/nfc.h>
 #include <nfc/nfc_listener.h>
 #include <nfc/protocols/nfc_generic_event.h>
+#include <nfc/protocols/mf_ultralight/mf_ultralight_listener.h>
 #include <nfc/nfc_device.h>
 #include <furi_hal_nfc.h>
+#include <flipper_format/flipper_format.h>
+
+#define AMI_TOOL_NFC_LOG_TAG "AmiToolNfc"
+#define AMI_TOOL_NFC_FILE_HEADER "Flipper NFC device"
+#define AMI_TOOL_NFC_FILE_FORMAT_VERSION 4
+#define AMI_TOOL_NFC_DEVICE_TYPE "NTAG/Ultralight"
 
 #define AMI_TOOL_INFO_READ_BUFFER 96
 #define AMI_TOOL_WRITE_THREAD_STACK_SIZE 2048
@@ -46,6 +53,79 @@ static void ami_tool_info_write_send_event(
     AmiToolCustomEvent event,
     const char* message);
 static const char* ami_tool_info_error_to_string(MfUltralightError error);
+
+/*
+ * Save the public NFC format directly.  Some community firmware builds copy
+ * MfUltralightData incompletely through nfc_device_set_data(), resulting in a
+ * syntactically valid file with zero pages.  Calling the protocol serializer
+ * with the original data avoids that broken intermediate copy.
+ */
+static bool ami_tool_info_save_nfc_file(
+    Storage* storage,
+    const char* path,
+    const MfUltralightData* tag_data) {
+    if(!storage || !path || !tag_data) {
+        return false;
+    }
+
+    size_t uid_len = 0;
+    const uint8_t* uid = mf_ultralight_get_uid(tag_data, &uid_len);
+    if(!uid || uid_len == 0) {
+        return false;
+    }
+
+    FlipperFormat* ff = flipper_format_buffered_file_alloc(storage);
+    if(!ff) {
+        return false;
+    }
+
+    bool saved = false;
+    do {
+        if(!flipper_format_buffered_file_open_always(ff, path)) break;
+        if(!flipper_format_write_header_cstr(
+               ff, AMI_TOOL_NFC_FILE_HEADER, AMI_TOOL_NFC_FILE_FORMAT_VERSION))
+            break;
+        if(!flipper_format_write_string_cstr(ff, "Device type", AMI_TOOL_NFC_DEVICE_TYPE)) break;
+        if(!flipper_format_write_hex(ff, "UID", uid, uid_len)) break;
+        if(!mf_ultralight_save(tag_data, ff)) break;
+        saved = true;
+    } while(false);
+
+    flipper_format_free(ff);
+    return saved;
+}
+
+/*
+ * Read back a just-written .nfc file and confirm it actually holds a full
+ * 135-page NTAG215 dump. A struct layout mismatch between this build's SDK
+ * and the running firmware (e.g. a custom firmware fork with extra fields in
+ * MfUltralightData) can make mf_ultralight_save() report success while
+ * silently writing an empty dump, because the corruption happens through
+ * fields both sides read/write consistently with their own (different)
+ * offsets. This is the only check that spans that boundary: it forces the
+ * firmware's own loader to read back what its own saver wrote.
+ */
+static bool ami_tool_info_verify_saved_nfc_file(Storage* storage, const char* path) {
+    if(!storage || !path) {
+        return false;
+    }
+
+    NfcDevice* device = nfc_device_alloc();
+    if(!device) {
+        return false;
+    }
+
+    bool valid = false;
+    if(nfc_device_load(device, path)) {
+        const MfUltralightData* data =
+            (const MfUltralightData*)nfc_device_get_data(device, NfcProtocolMfUltralight);
+        valid = data && data->type == MfUltralightTypeNTAG215 && data->pages_total == 135 &&
+                data->pages_read == 135;
+    }
+
+    nfc_device_free(device);
+    return valid;
+}
 
 bool ami_tool_compute_password_from_uid(
     const uint8_t* uid,
@@ -1317,6 +1397,18 @@ bool ami_tool_info_save_to_storage(AmiToolApp* app) {
     furi_assert(app);
 
     if(!app->tag_data || !app->tag_data_valid || !app->storage) {
+        FURI_LOG_W(AMI_TOOL_NFC_LOG_TAG, "Save requested without valid tag data");
+        return false;
+    }
+
+    if(app->tag_data->type != MfUltralightTypeNTAG215 ||
+       app->tag_data->pages_total != 135 || app->tag_data->pages_read != 135) {
+        FURI_LOG_E(
+            AMI_TOOL_NFC_LOG_TAG,
+            "Refusing incomplete dump: type=%u total=%u read=%u",
+            (unsigned int)app->tag_data->type,
+            (unsigned int)app->tag_data->pages_total,
+            (unsigned int)app->tag_data->pages_read);
         return false;
     }
 
@@ -1351,14 +1443,18 @@ bool ami_tool_info_save_to_storage(AmiToolApp* app) {
     furi_string_printf(
         path, "%s/%s-%s%s", AMI_TOOL_NFC_FOLDER, id_hex, uid_hex, AMI_TOOL_NFC_EXTENSION);
 
-    NfcDevice* device = nfc_device_alloc();
-    bool success = false;
-    if(device) {
-        amiibo_configure_rf_interface(app->tag_data);
-        nfc_device_set_data(
-            device, NfcProtocolMfUltralight, (const NfcDeviceData*)app->tag_data);
-        success = nfc_device_save(device, furi_string_get_cstr(path));
-        nfc_device_free(device);
+    amiibo_configure_rf_interface(app->tag_data);
+    bool success = ami_tool_info_save_nfc_file(
+        app->storage, furi_string_get_cstr(path), app->tag_data);
+    if(!success) {
+        FURI_LOG_E(AMI_TOOL_NFC_LOG_TAG, "Unable to serialize NFC data");
+    } else if(!ami_tool_info_verify_saved_nfc_file(app->storage, furi_string_get_cstr(path))) {
+        FURI_LOG_E(
+            AMI_TOOL_NFC_LOG_TAG,
+            "Saved file failed verification, discarding: %s",
+            furi_string_get_cstr(path));
+        storage_common_remove(app->storage, furi_string_get_cstr(path));
+        success = false;
     }
 
     if(success) {
@@ -1503,14 +1599,31 @@ static bool ami_tool_info_write_password_pages(
 }
 
 static NfcCommand amiibo_emulation_cb(NfcGenericEvent event, void* context) {
-    UNUSED(event);
-    UNUSED(context);
-    return NfcCommandContinue; // keep the listener alive
+    AmiToolApp* app = context;
+    if(!app || event.protocol != NfcProtocolMfUltralight || !event.event_data) {
+        return NfcCommandStop;
+    }
+
+    MfUltralightListenerEvent* mf_event = (MfUltralightListenerEvent*)event.event_data;
+    if(mf_event->type == MfUltralightListenerEventTypeAuth) {
+        if(!app->tag_password_valid || !mf_event->data) {
+            FURI_LOG_E(AMI_TOOL_NFC_LOG_TAG, "Authentication requested without a password");
+            return NfcCommandStop;
+        }
+
+        FURI_LOG_I(AMI_TOOL_NFC_LOG_TAG, "NTAG215 authentication requested by reader");
+        if(app->notification) {
+            notification_message(app->notification, &sequence_blink_green_10);
+        }
+    }
+
+    return NfcCommandContinue;
 }
 
 bool ami_tool_info_start_emulation(AmiToolApp* app) {
     furi_assert(app);
     if(!app->tag_data || !app->tag_data_valid || !app->nfc) {
+        FURI_LOG_W(AMI_TOOL_NFC_LOG_TAG, "Emulation requested without a loaded tag");
         return false;
     }
 
@@ -1524,10 +1637,12 @@ bool ami_tool_info_start_emulation(AmiToolApp* app) {
                   app->last_uid, app->last_uid_len, &password)) {
         /* password derived successfully */
     } else {
+        FURI_LOG_W(AMI_TOOL_NFC_LOG_TAG, "Emulation requested without a valid UID/password");
         return false;
     }
 
     if(!ami_tool_info_write_password_pages(app, &password)) {
+        FURI_LOG_E(AMI_TOOL_NFC_LOG_TAG, "Unable to configure password pages for emulation");
         return false;
     }
 
@@ -1535,9 +1650,11 @@ bool ami_tool_info_start_emulation(AmiToolApp* app) {
     app->emulation_listener = nfc_listener_alloc(
         app->nfc, NfcProtocolMfUltralight, (const NfcDeviceData*)app->tag_data);
     if(!app->emulation_listener) {
+        FURI_LOG_E(AMI_TOOL_NFC_LOG_TAG, "Unable to allocate NTAG215 listener");
         return false;
     }
     nfc_listener_start(app->emulation_listener, amiibo_emulation_cb, app);
+    FURI_LOG_I(AMI_TOOL_NFC_LOG_TAG, "NTAG215 emulation started");
 
     furi_string_set(
         app->text_box_store,
@@ -1564,6 +1681,7 @@ void ami_tool_info_stop_emulation(AmiToolApp* app) {
         nfc_listener_stop(app->emulation_listener);
         nfc_listener_free(app->emulation_listener);
         app->emulation_listener = NULL;
+        FURI_LOG_I(AMI_TOOL_NFC_LOG_TAG, "NTAG215 emulation stopped");
     }
     app->info_emulation_active = false;
 }

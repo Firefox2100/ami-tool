@@ -10,6 +10,7 @@
 #include <gui/modules/text_box.h>
 #include <gui/modules/widget.h>
 #include <gui/scene_manager.h>
+#include <notification/notification_messages.h>
 #include <storage/storage.h>
 #include <nfc/nfc.h>
 #include <nfc/nfc_listener.h>
@@ -189,6 +190,7 @@ typedef enum {
 
 struct AmiToolApp {
     Gui* gui;
+    NotificationApp* notification;
     ViewDispatcher* view_dispatcher;
     SceneManager* scene_manager;
 
