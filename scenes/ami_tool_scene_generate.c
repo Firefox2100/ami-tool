@@ -42,7 +42,10 @@ static void ami_tool_scene_generate_show_amiibo_placeholder(AmiToolApp* app, siz
 static void ami_tool_scene_generate_clear_selected_game(AmiToolApp* app);
 static int8_t ami_tool_scene_generate_hex_value(char ch);
 static bool ami_tool_scene_generate_parse_uuid(const char* hex, uint8_t* out, size_t out_len);
-static bool ami_tool_scene_generate_prepare_dump(AmiToolApp* app, const char* id_hex);
+static bool ami_tool_scene_generate_prepare_dump(
+    AmiToolApp* app,
+    const char* id_hex,
+    const char** error_message);
 
 static void ami_tool_scene_generate_clear_selected_game(AmiToolApp* app) {
     if(app->generate_selected_game) {
@@ -69,6 +72,7 @@ void ami_tool_generate_clear_amiibo_cache(AmiToolApp* app) {
     app->generate_amiibo_count = 0;
     app->generate_page_offset = 0;
     app->generate_selected_index = 0;
+    app->generate_game_ids_cache_valid = false;
 }
 
 static int8_t ami_tool_scene_generate_hex_value(char ch) {
@@ -106,13 +110,21 @@ static bool ami_tool_scene_generate_parse_uuid(const char* hex, uint8_t* out, si
     return true;
 }
 
-static bool ami_tool_scene_generate_prepare_dump(AmiToolApp* app, const char* id_hex) {
+static bool ami_tool_scene_generate_prepare_dump(
+    AmiToolApp* app,
+    const char* id_hex,
+    const char** error_message) {
+    if(error_message) {
+        *error_message = "Unknown error";
+    }
     if(!app || !app->tag_data || !id_hex) {
+        if(error_message) *error_message = "Missing NFC data buffer";
         return false;
     }
 
     uint8_t uuid[8];
     if(!ami_tool_scene_generate_parse_uuid(id_hex, uuid, sizeof(uuid))) {
+        if(error_message) *error_message = "Invalid character ID";
         return false;
     }
 
@@ -121,10 +133,12 @@ static bool ami_tool_scene_generate_prepare_dump(AmiToolApp* app, const char* id
     Ntag21xMetadataHeader header;
     RfidxStatus status = amiibo_generate(uuid, app->tag_data, &header);
     if(status != RFIDX_OK) {
+        if(error_message) *error_message = "Failed to initialize NTAG215 data";
         return false;
     }
 
     if(!ami_tool_has_retail_key(app)) {
+        if(error_message) *error_message = "Retail key is unavailable";
         return false;
     }
 
@@ -134,24 +148,36 @@ static bool ami_tool_scene_generate_prepare_dump(AmiToolApp* app, const char* id
 
     status = amiibo_derive_key(&keys->data, app->tag_data, &data_key);
     if(status != RFIDX_OK) {
+        if(error_message) *error_message = "Failed to derive data key";
         return false;
     }
     status = amiibo_derive_key(&keys->tag, app->tag_data, &tag_key);
     if(status != RFIDX_OK) {
+        if(error_message) *error_message = "Failed to derive tag key";
         return false;
     }
 
     status = amiibo_sign_payload(&tag_key, &data_key, app->tag_data);
     if(status != RFIDX_OK) {
+        if(error_message) *error_message = "Failed to sign generated data";
+        return false;
+    }
+
+    status = amiibo_validate_signature(&tag_key, &data_key, app->tag_data);
+    if(status != RFIDX_OK) {
+        FURI_LOG_E("AmiTool", "Generated tag signature validation failed");
+        if(error_message) *error_message = "Generated signature check failed";
         return false;
     }
 
     status = amiibo_cipher(&data_key, app->tag_data);
     if(status != RFIDX_OK) {
+        if(error_message) *error_message = "Failed to encrypt generated data";
         return false;
     }
 
     if(app->tag_data->pages_total < 2) {
+        if(error_message) *error_message = "Generated tag has invalid page count";
         return false;
     }
 
@@ -478,15 +504,26 @@ static bool ami_tool_scene_generate_load_game_page(AmiToolApp* app) {
 
     app->generate_page_entry_count = 0;
 
-    FuriString* ids_line = furi_string_alloc();
-    bool found = ami_tool_scene_generate_find_mapping_for_game(
-        app, app->generate_platform, app->generate_selected_game, ids_line);
-    if(!found) {
-        furi_string_free(ids_line);
-        return false;
+    bool cache_hit = app->generate_game_ids_cache_valid &&
+                      app->generate_game_ids_cache_platform == app->generate_platform &&
+                      furi_string_equal(app->generate_game_ids_cache_game, app->generate_selected_game);
+
+    if(!cache_hit) {
+        bool found = ami_tool_scene_generate_find_mapping_for_game(
+            app,
+            app->generate_platform,
+            app->generate_selected_game,
+            app->generate_game_ids_cache_ids);
+        if(!found) {
+            app->generate_game_ids_cache_valid = false;
+            return false;
+        }
+        app->generate_game_ids_cache_platform = app->generate_platform;
+        furi_string_set(app->generate_game_ids_cache_game, app->generate_selected_game);
+        app->generate_game_ids_cache_valid = true;
     }
 
-    const char* raw = furi_string_get_cstr(ids_line);
+    const char* raw = furi_string_get_cstr(app->generate_game_ids_cache_ids);
     size_t token_start = 0;
     size_t index = 0;
 
@@ -510,7 +547,6 @@ static bool ami_tool_scene_generate_load_game_page(AmiToolApp* app) {
                 FuriString* id_slot = app->generate_page_ids[slot];
                 FuriString* name_slot = app->generate_page_names[slot];
                 if(!id_slot || !name_slot) {
-                    furi_string_free(ids_line);
                     app->generate_page_entry_count = slot;
                     return false;
                 }
@@ -528,7 +564,6 @@ static bool ami_tool_scene_generate_load_game_page(AmiToolApp* app) {
         token_start = token_end + 1;
     }
 
-    furi_string_free(ids_line);
     app->generate_amiibo_count = index;
     if(index == 0) {
         return false;
@@ -844,10 +879,12 @@ static void ami_tool_scene_generate_show_amiibo_placeholder(AmiToolApp* app, siz
     memcpy(id_hex, furi_string_get_cstr(id_str), id_len);
     id_hex[id_len] = '\0';
 
-    if(!ami_tool_scene_generate_prepare_dump(app, id_hex)) {
+    const char* error_message = NULL;
+    if(!ami_tool_scene_generate_prepare_dump(app, id_hex, &error_message)) {
         furi_string_printf(
             app->text_box_store,
-            "Unable to generate Amiibo dump.\n\nID: %s",
+            "Unable to generate Amiibo dump.\n\nReason: %s\nID: %s",
+            error_message ? error_message : "Unknown error",
             id_hex[0] ? id_hex : "Unknown");
         ami_tool_scene_generate_commit_text_view(
             app, AmiToolGenerateStateMessage, AmiToolGenerateStateAmiiboList);

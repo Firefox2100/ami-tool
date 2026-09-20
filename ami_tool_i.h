@@ -252,6 +252,10 @@ struct AmiToolApp {
     FuriString* generate_page_names[AMI_TOOL_GENERATE_MAX_AMIIBO_PAGE_ITEMS];
     FuriString* generate_page_ids[AMI_TOOL_GENERATE_MAX_AMIIBO_PAGE_ITEMS];
     FuriString* generate_selected_game;
+    bool generate_game_ids_cache_valid;
+    AmiToolGeneratePlatform generate_game_ids_cache_platform;
+    FuriString* generate_game_ids_cache_game;
+    FuriString* generate_game_ids_cache_ids;
     size_t saved_page_offset;
     size_t saved_page_entry_count;
     bool saved_has_next_page;

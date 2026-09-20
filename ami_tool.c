@@ -114,6 +114,10 @@ AmiToolApp* ami_tool_alloc(void) {
         app->generate_page_ids[i] = furi_string_alloc();
     }
     app->generate_selected_game = furi_string_alloc();
+    app->generate_game_ids_cache_valid = false;
+    app->generate_game_ids_cache_platform = AmiToolGeneratePlatform3DS;
+    app->generate_game_ids_cache_game = furi_string_alloc();
+    app->generate_game_ids_cache_ids = furi_string_alloc();
     app->saved_page_offset = 0;
     app->saved_page_entry_count = 0;
     app->saved_has_next_page = false;
@@ -194,6 +198,14 @@ void ami_tool_free(AmiToolApp* app) {
     if(app->generate_selected_game) {
         furi_string_free(app->generate_selected_game);
         app->generate_selected_game = NULL;
+    }
+    if(app->generate_game_ids_cache_game) {
+        furi_string_free(app->generate_game_ids_cache_game);
+        app->generate_game_ids_cache_game = NULL;
+    }
+    if(app->generate_game_ids_cache_ids) {
+        furi_string_free(app->generate_game_ids_cache_ids);
+        app->generate_game_ids_cache_ids = NULL;
     }
     for(size_t i = 0; i < AMI_TOOL_GENERATE_MAX_AMIIBO_PAGE_ITEMS; i++) {
         if(app->generate_page_names[i]) {
