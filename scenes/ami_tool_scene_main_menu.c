@@ -38,6 +38,9 @@ static bool ami_tool_scene_main_menu_require_key(AmiToolApp* app) {
     case AmiToolRetailKeyStatusInvalidSize:
         ami_tool_scene_main_menu_show_error(app, "key_retail.bin file data error");
         break;
+    case AmiToolRetailKeyStatusInvalidFormat:
+        ami_tool_scene_main_menu_show_error(app, "key_retail.bin file format error");
+        break;
     default:
         ami_tool_scene_main_menu_show_error(app, "key_retail.bin file read error");
         break;

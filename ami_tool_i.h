@@ -173,6 +173,7 @@ typedef enum {
     AmiToolRetailKeyStatusOk,
     AmiToolRetailKeyStatusNotFound,
     AmiToolRetailKeyStatusInvalidSize,
+    AmiToolRetailKeyStatusInvalidFormat,
     AmiToolRetailKeyStatusStorageError,
 } AmiToolRetailKeyStatus;
 

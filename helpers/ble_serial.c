@@ -20,8 +20,17 @@ static FuriHalBleProfileBase* ble_profile_serial_start(FuriHalBleProfileParams p
     UNUSED(profile_params);
 
     BleProfileSerial* profile = malloc(sizeof(BleProfileSerial));
+    if(!profile) {
+        FURI_LOG_E("AmiToolBle", "Unable to allocate serial BLE profile");
+        return NULL;
+    }
     profile->base.config = ble_profile_serial;
     profile->serial_svc = ble_svc_serial_start();
+    if(!profile->serial_svc) {
+        FURI_LOG_E("AmiToolBle", "Unable to start serial BLE service");
+        free(profile);
+        return NULL;
+    }
 
     return &profile->base;
 }

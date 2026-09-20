@@ -9,6 +9,43 @@ static void ami_tool_reset_retail_key(AmiToolApp* app) {
     app->retail_key_loaded = false;
 }
 
+static bool ami_tool_is_printable_key_string(const char* value, size_t size) {
+    if(!value || size == 0) {
+        return false;
+    }
+
+    bool terminated = false;
+    for(size_t i = 0; i < size; i++) {
+        if(value[i] == '\0') {
+            terminated = true;
+            break;
+        }
+        if((unsigned char)value[i] < 0x20U || (unsigned char)value[i] > 0x7EU) {
+            return false;
+        }
+    }
+    return terminated;
+}
+
+static bool ami_tool_retail_key_has_valid_structure(const uint8_t* key, size_t key_size) {
+    if(!key || key_size != AMI_TOOL_RETAIL_KEY_SIZE) {
+        return false;
+    }
+
+    const DumpedKeys* keys = (const DumpedKeys*)key;
+    const DumpedKeySingle* key_parts[] = {&keys->data, &keys->tag};
+    for(size_t i = 0; i < COUNT_OF(key_parts); i++) {
+        const DumpedKeySingle* part = key_parts[i];
+        if((part->magicBytesSize != 14U) && (part->magicBytesSize != 16U)) {
+            return false;
+        }
+        if(!ami_tool_is_printable_key_string(part->typeString, sizeof(part->typeString))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Forward declarations of callbacks */
 static bool ami_tool_custom_event_callback(void* context, uint32_t event);
 static bool ami_tool_back_event_callback(void* context);
@@ -17,6 +54,10 @@ static void ami_tool_tick_event_callback(void* context);
 /* Allocate and initialize app */
 AmiToolApp* ami_tool_alloc(void) {
     AmiToolApp* app = malloc(sizeof(AmiToolApp));
+    if(!app) {
+        return NULL;
+    }
+    memset(app, 0, sizeof(*app));
 
     /* Scene manager */
     app->scene_manager = scene_manager_alloc(&ami_tool_scene_handlers, app);
@@ -270,6 +311,10 @@ int32_t ami_tool_app(void* p) {
     UNUSED(p);
 
     AmiToolApp* app = ami_tool_alloc();
+    if(!app) {
+        FURI_LOG_E("AmiTool", "Unable to allocate application state");
+        return -1;
+    }
 
     /* Start with main menu scene */
     scene_manager_next_scene(app->scene_manager, AmiToolSceneMainMenu);
@@ -304,13 +349,15 @@ AmiToolRetailKeyStatus ami_tool_load_retail_key(AmiToolApp* app) {
         if(read == AMI_TOOL_RETAIL_KEY_SIZE) {
             uint8_t extra = 0;
             size_t extra_read = storage_file_read(file, &extra, 1);
-            if(extra_read == 0) {
+            if(extra_read == 0 &&
+               ami_tool_retail_key_has_valid_structure(app->retail_key, read)) {
                 app->retail_key_size = read;
                 app->retail_key_loaded = true;
                 status = AmiToolRetailKeyStatusOk;
             } else {
                 ami_tool_reset_retail_key(app);
-                status = AmiToolRetailKeyStatusInvalidSize;
+                status = (extra_read == 0) ? AmiToolRetailKeyStatusInvalidFormat :
+                                            AmiToolRetailKeyStatusInvalidSize;
             }
         } else {
             ami_tool_reset_retail_key(app);
